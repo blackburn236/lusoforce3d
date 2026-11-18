@@ -1,11 +1,15 @@
 import { getStore } from "@netlify/blobs";
-import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
+import { createHmac, timingSafeEqual, randomUUID, randomBytes } from "node:crypto";
 
 const PRODUCT_STORE = "lusoforce-products";
 const IMAGE_STORE = "lusoforce-images";
+const MESSAGE_STORE = "lusoforce-messages";
+const VIDEO_STORE = "lusoforce-videos";
+const VIDEO_CATALOG_KEY = "videos-v1";
 const CATALOG_KEY = "catalog-v1";
 const COOKIE = "lf3d_admin";
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 5 * 1024 * 1024;
 const allowedTypes = new Map([
   ["image/jpeg", "jpg"], ["image/png", "png"],
   ["image/webp", "webp"], ["image/gif", "gif"]
@@ -54,12 +58,43 @@ const starterProducts = [
   { id: "starter-custom", category: "personalizados", titlePt: "Projeto 3D por medida", titleFr: "Projet 3D sur mesure", descriptionPt: "Tens uma ideia? Criamos uma peça à tua medida.", descriptionFr: "Tu as une idée ? Nous créons une pièce sur mesure.", price: 0, imageKey: "", label: "YOUR IDEA" }
 ];
 
+async function readVideos() {
+  return (await getStore(VIDEO_STORE).get(VIDEO_CATALOG_KEY, { type: "json", consistency: "strong" })) || [];
+}
+async function saveVideos(videos) {
+  await getStore(VIDEO_STORE).setJSON(VIDEO_CATALOG_KEY, videos);
+}
+function validVideoUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    if (u.protocol !== "https:") return false;
+    return ["youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com", "tiktok.com", "www.tiktok.com", "vm.tiktok.com"].includes(u.hostname);
+  } catch { return false; }
+}
+
 async function readProducts() {
   const store = getStore(PRODUCT_STORE);
   return (await store.get(CATALOG_KEY, { type: "json", consistency: "strong" })) || starterProducts;
 }
 async function saveProducts(products) {
   await getStore(PRODUCT_STORE).setJSON(CATALOG_KEY, products);
+}
+
+const cleanText = (v, max) => String(v || "").trim().slice(0, max);
+const codeHash = code => createHmac("sha256", process.env.SESSION_SECRET || "").update(String(code).toUpperCase().replace(/[^A-Z0-9]/g, "")).digest("hex");
+async function getThread(code) {
+  if (!/^[A-F0-9]{16}$/i.test(String(code || "").replace(/[^A-Z0-9]/gi, ""))) return null;
+  return await getStore(MESSAGE_STORE).get(`thread-${codeHash(code)}`, { type: "json", consistency: "strong" });
+}
+async function putThread(thread) {
+  await getStore(MESSAGE_STORE).setJSON(`thread-${thread.key}`, thread);
+}
+async function listThreads() {
+  const store = getStore(MESSAGE_STORE);
+  const result = await store.list({ prefix: "thread-" });
+  const keys = (result.blobs || []).map(x => x.key);
+  const rows = await Promise.all(keys.map(key => store.get(key, { type: "json", consistency: "strong" })));
+  return rows.filter(Boolean).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
 }
 
 export default async (request) => {
@@ -79,12 +114,35 @@ export default async (request) => {
       }});
     }
 
+    if (method === "GET" && url.searchParams.has("video")) {
+      const key = url.searchParams.get("video") || "";
+      if (!/^videos\/[a-zA-Z0-9-]+\.mp4$/.test(key)) return new Response("Not found", { status: 404 });
+      const video = await getStore(VIDEO_STORE).getWithMetadata(key, { type: "arrayBuffer" });
+      if (!video) return new Response("Not found", { status: 404 });
+      return new Response(video.data, { headers: {
+        "content-type": "video/mp4",
+        "cache-control": "public, max-age=3600, stale-while-revalidate=86400",
+        "x-content-type-options": "nosniff",
+        "accept-ranges": "bytes"
+      }});
+    }
+
+    if (method === "GET" && url.searchParams.has("videos")) {
+      return json({ videos: await readVideos() }, 200, { "cache-control": "public, max-age=30, stale-while-revalidate=60" });
+    }
+
     if (method === "GET" && url.searchParams.has("session")) {
       return json({ authenticated: validSession(request) });
     }
 
     if (method === "GET" && url.searchParams.has("products")) {
       return json({ products: await readProducts() }, 200, { "cache-control": "public, max-age=30, stale-while-revalidate=60" });
+    }
+
+    if (method === "GET" && url.searchParams.has("messages")) {
+      if (!validSession(request)) return json({ error: "Sessão terminada. Inicia sessão novamente." }, 401);
+      const threads = await listThreads();
+      return json({ threads: threads.map(t => ({ id: t.id, key: t.key, name: t.name, email: t.email, subject: t.subject, updatedAt: t.updatedAt, adminUnread: !!t.adminUnread, lastMessage: t.messages?.at(-1)?.text || "" })) });
     }
 
     if (method !== "POST") return json({ error: "Método não permitido." }, 405);
@@ -115,7 +173,55 @@ export default async (request) => {
     }
 
     if (action === "logout") return json({ ok: true }, 200, { "set-cookie": cookie("", 0) });
+
+    // Área pública de mensagens: o código aleatório funciona como chave privada da conversa.
+    if (["message-create", "message-read", "message-reply"].includes(action)) {
+      if (action === "message-create") {
+        const name = cleanText(payload.name, 80), email = cleanText(payload.email, 160), subject = cleanText(payload.subject, 120), message = cleanText(payload.message, 3000);
+        if (cleanText(payload.website, 100)) return json({ error: "Pedido inválido." }, 400);
+        if (!name || !/^\S+@\S+\.\S+$/.test(email) || !subject || message.length < 5) return json({ error: "Preenche o nome, um email válido, o assunto e a mensagem." }, 400);
+        const code = randomBytes(8).toString("hex").toUpperCase();
+        const key = codeHash(code), now = new Date().toISOString();
+        const thread = { id: randomUUID(), key, name, email, subject, createdAt: now, updatedAt: now, adminUnread: true, customerUnread: false, messages: [{ id: randomUUID(), sender: "customer", text: message, createdAt: now }] };
+        await putThread(thread);
+        return json({ ok: true, code, thread: { name, subject, messages: thread.messages } });
+      }
+      const code = cleanText(payload.code, 40), thread = await getThread(code);
+      if (!thread) return json({ error: "Código não encontrado. Confirma o código e tenta novamente." }, 404);
+      if (action === "message-read") {
+        thread.customerUnread = false;
+        return json({ ok: true, thread: { name: thread.name, subject: thread.subject, messages: thread.messages || [] } });
+      }
+      const message = cleanText(payload.message, 3000);
+      if (message.length < 1) return json({ error: "Escreve uma mensagem antes de enviar." }, 400);
+      const now = new Date().toISOString();
+      thread.messages.push({ id: randomUUID(), sender: "customer", text: message, createdAt: now });
+      thread.updatedAt = now; thread.adminUnread = true;
+      await putThread(thread);
+      return json({ ok: true, thread: { name: thread.name, subject: thread.subject, messages: thread.messages } });
+    }
+
     if (!validSession(request)) return json({ error: "Sessão terminada. Inicia sessão novamente." }, 401);
+
+    if (action === "admin-thread") {
+      const thread = (await listThreads()).find(t => t.id === String(payload.id || ""));
+      if (!thread) return json({ error: "Conversa não encontrada." }, 404);
+      thread.adminUnread = false; await putThread(thread);
+      return json({ thread });
+    }
+    if (action === "admin-reply") {
+      const thread = (await listThreads()).find(t => t.id === String(payload.id || ""));
+      const message = cleanText(payload.message, 3000);
+      if (!thread) return json({ error: "Conversa não encontrada." }, 404);
+      if (!message) return json({ error: "Escreve uma resposta." }, 400);
+      const now = new Date().toISOString(); thread.messages.push({ id: randomUUID(), sender: "admin", text: message, createdAt: now }); thread.updatedAt = now; thread.customerUnread = true;
+      await putThread(thread); return json({ ok: true, thread });
+    }
+    if (action === "admin-delete") {
+      const id = String(payload.id || ""), thread = (await listThreads()).find(t => t.id === id);
+      if (!thread) return json({ error: "Conversa não encontrada." }, 404);
+      await getStore(MESSAGE_STORE).delete(`thread-${thread.key}`); return json({ ok: true });
+    }
 
     if (action === "upload") {
       const file = payload.get("file");
@@ -125,6 +231,42 @@ export default async (request) => {
       const key = `images/${randomUUID()}.${allowedTypes.get(file.type)}`;
       await getStore(IMAGE_STORE).set(key, file, { metadata: { contentType: file.type } });
       return json({ imageKey: key, imageUrl: `/.netlify/functions/admin-api?image=${encodeURIComponent(key)}` });
+    }
+
+    if (action === "upload-video") {
+      const file = payload.get("file");
+      if (!file || typeof file.arrayBuffer !== "function") return json({ error: "Escolhe um vídeo MP4." }, 400);
+      if (file.type !== "video/mp4" && !String(file.name || "").toLowerCase().endsWith(".mp4")) return json({ error: "Só são aceites vídeos MP4." }, 400);
+      if (file.size < 1 || file.size > MAX_VIDEO_BYTES) return json({ error: "O vídeo deve ter no máximo 5 MB nesta versão." }, 413);
+      const key = `videos/${randomUUID()}.mp4`;
+      await getStore(VIDEO_STORE).set(key, file, { metadata: { contentType: "video/mp4" } });
+      const videos = await readVideos();
+      const video = { id: randomUUID(), type: "mp4", title: String(payload.get("title") || "Vídeo LUSOFORCE 3D").trim().slice(0, 100), videoKey: key };
+      videos.unshift(video);
+      await saveVideos(videos);
+      return json({ ok: true, video, videos });
+    }
+
+    if (action === "save-video") {
+      const title = String(payload.title || "").trim().slice(0, 100);
+      const videoUrl = String(payload.url || "").trim().slice(0, 500);
+      if (!title) return json({ error: "Indica um título para o vídeo." }, 400);
+      if (!validVideoUrl(videoUrl)) return json({ error: "Insere uma ligação HTTPS válida do YouTube ou TikTok." }, 400);
+      const videos = await readVideos();
+      const video = { id: randomUUID(), type: "link", title, url: videoUrl };
+      videos.unshift(video);
+      await saveVideos(videos);
+      return json({ ok: true, video, videos });
+    }
+
+    if (action === "delete-video") {
+      const id = String(payload.id || "");
+      const videos = await readVideos();
+      const video = videos.find(x => x.id === id);
+      if (!video) return json({ error: "Vídeo não encontrado." }, 404);
+      await saveVideos(videos.filter(x => x.id !== id));
+      if (video.videoKey) await getStore(VIDEO_STORE).delete(video.videoKey);
+      return json({ ok: true, videos: videos.filter(x => x.id !== id) });
     }
 
     if (action === "save") {
