@@ -1,0 +1,36 @@
+LUSOFORCE 3D — SITE + ÁREA DE ADMINISTRAÇÃO
+
+O QUE ESTÁ INCLUÍDO
+- Site público em português e francês.
+- Área de administração em /admin.
+- Carregamento de fotografias (JPG, PNG, WEBP ou GIF, até 4 MB).
+- Criar, editar e apagar produtos, descrições e preços.
+- Fotografias e catálogo guardados online com Netlify Blobs.
+- Palavra-passe protegida por variáveis de ambiente; não está escrita no código.
+
+ANTES DE PUBLICAR
+1. Cria um repositório no GitHub e carrega para lá TODOS os ficheiros e pastas deste pacote.
+2. Na Netlify, escolhe Add new project > Import an existing project > GitHub e seleciona esse repositório.
+3. Confirma as definições de build:
+   - Build command: npm install
+   - Publish directory: .
+   - Functions directory: netlify/functions (já indicado em netlify.toml)
+4. Antes de publicar, abre Site configuration > Environment variables e cria:
+   - ADMIN_PASSWORD = uma palavra-passe forte escolhida por ti
+   - SESSION_SECRET = uma chave aleatória longa (pelo menos 32 caracteres)
+   Exemplo para gerar uma chave: abre PowerShell no Windows e executa:
+   [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+   Copia o resultado para SESSION_SECRET. Não partilhes estes valores.
+5. Faz Deploy. Se adicionares as variáveis depois do primeiro deploy, faz novo deploy para aplicar.
+
+COMO USAR
+- Loja: endereço do site Netlify.
+- Administração: endereço do site seguido de /admin/
+- Entra com ADMIN_PASSWORD.
+- Para adicionar: Novo produto > preencher nome PT e FR > escolher fotografia > Carregar fotografia > Guardar produto.
+
+NOTAS
+- A primeira publicação precisa de ser feita através da integração GitHub/Netlify para que as Netlify Functions sejam compiladas. Um simples arrastar-e-largar de HTML não ativa esta API.
+- O catálogo inicial contém exemplos editáveis. Podes alterá-los ou apagá-los na área de administração.
+- O endereço de email de encomendas continua como CONTACTO_A_CONFIGURAR no site. Substitui-o pelo teu email antes de receber pedidos.
+- O site prepara pedidos por email; pagamentos online ainda não estão configurados.
