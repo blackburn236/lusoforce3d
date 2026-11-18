@@ -4,3 +4,16 @@
 
 [functions]
   node_bundler = "esbuild"
+
+# Garante que o endereço principal abre sempre a loja pública.
+[[redirects]]
+  from = "/"
+  to = "/index.html"
+  status = 200
+  force = true
+
+# Mantém a área privada acessível apenas no caminho /admin/.
+[[redirects]]
+  from = "/admin"
+  to = "/admin/index.html"
+  status = 200

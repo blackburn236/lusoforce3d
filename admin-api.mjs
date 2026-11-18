@@ -3,9 +3,12 @@ import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
 
 const PRODUCT_STORE = "lusoforce-products";
 const IMAGE_STORE = "lusoforce-images";
+const VIDEO_STORE = "lusoforce-videos";
+const VIDEO_CATALOG_KEY = "videos-v1";
 const CATALOG_KEY = "catalog-v1";
 const COOKIE = "lf3d_admin";
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+const MAX_VIDEO_BYTES = 5 * 1024 * 1024;
 const allowedTypes = new Map([
   ["image/jpeg", "jpg"], ["image/png", "png"],
   ["image/webp", "webp"], ["image/gif", "gif"]
@@ -54,6 +57,20 @@ const starterProducts = [
   { id: "starter-custom", category: "personalizados", titlePt: "Projeto 3D por medida", titleFr: "Projet 3D sur mesure", descriptionPt: "Tens uma ideia? Criamos uma peça à tua medida.", descriptionFr: "Tu as une idée ? Nous créons une pièce sur mesure.", price: 0, imageKey: "", label: "YOUR IDEA" }
 ];
 
+async function readVideos() {
+  return (await getStore(VIDEO_STORE).get(VIDEO_CATALOG_KEY, { type: "json", consistency: "strong" })) || [];
+}
+async function saveVideos(videos) {
+  await getStore(VIDEO_STORE).setJSON(VIDEO_CATALOG_KEY, videos);
+}
+function validVideoUrl(raw) {
+  try {
+    const u = new URL(String(raw || ""));
+    if (u.protocol !== "https:") return false;
+    return ["youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com", "tiktok.com", "www.tiktok.com", "vm.tiktok.com"].includes(u.hostname);
+  } catch { return false; }
+}
+
 async function readProducts() {
   const store = getStore(PRODUCT_STORE);
   return (await store.get(CATALOG_KEY, { type: "json", consistency: "strong" })) || starterProducts;
@@ -77,6 +94,23 @@ export default async (request) => {
         "cache-control": "public, max-age=3600, stale-while-revalidate=86400",
         "x-content-type-options": "nosniff"
       }});
+    }
+
+    if (method === "GET" && url.searchParams.has("video")) {
+      const key = url.searchParams.get("video") || "";
+      if (!/^videos\/[a-zA-Z0-9-]+\.mp4$/.test(key)) return new Response("Not found", { status: 404 });
+      const video = await getStore(VIDEO_STORE).getWithMetadata(key, { type: "arrayBuffer" });
+      if (!video) return new Response("Not found", { status: 404 });
+      return new Response(video.data, { headers: {
+        "content-type": "video/mp4",
+        "cache-control": "public, max-age=3600, stale-while-revalidate=86400",
+        "x-content-type-options": "nosniff",
+        "accept-ranges": "bytes"
+      }});
+    }
+
+    if (method === "GET" && url.searchParams.has("videos")) {
+      return json({ videos: await readVideos() }, 200, { "cache-control": "public, max-age=30, stale-while-revalidate=60" });
     }
 
     if (method === "GET" && url.searchParams.has("session")) {
@@ -125,6 +159,42 @@ export default async (request) => {
       const key = `images/${randomUUID()}.${allowedTypes.get(file.type)}`;
       await getStore(IMAGE_STORE).set(key, file, { metadata: { contentType: file.type } });
       return json({ imageKey: key, imageUrl: `/.netlify/functions/admin-api?image=${encodeURIComponent(key)}` });
+    }
+
+    if (action === "upload-video") {
+      const file = payload.get("file");
+      if (!file || typeof file.arrayBuffer !== "function") return json({ error: "Escolhe um vídeo MP4." }, 400);
+      if (file.type !== "video/mp4" && !String(file.name || "").toLowerCase().endsWith(".mp4")) return json({ error: "Só são aceites vídeos MP4." }, 400);
+      if (file.size < 1 || file.size > MAX_VIDEO_BYTES) return json({ error: "O vídeo deve ter no máximo 5 MB nesta versão." }, 413);
+      const key = `videos/${randomUUID()}.mp4`;
+      await getStore(VIDEO_STORE).set(key, file, { metadata: { contentType: "video/mp4" } });
+      const videos = await readVideos();
+      const video = { id: randomUUID(), type: "mp4", title: String(payload.get("title") || "Vídeo LUSOFORCE 3D").trim().slice(0, 100), videoKey: key };
+      videos.unshift(video);
+      await saveVideos(videos);
+      return json({ ok: true, video, videos });
+    }
+
+    if (action === "save-video") {
+      const title = String(payload.title || "").trim().slice(0, 100);
+      const videoUrl = String(payload.url || "").trim().slice(0, 500);
+      if (!title) return json({ error: "Indica um título para o vídeo." }, 400);
+      if (!validVideoUrl(videoUrl)) return json({ error: "Insere uma ligação HTTPS válida do YouTube ou TikTok." }, 400);
+      const videos = await readVideos();
+      const video = { id: randomUUID(), type: "link", title, url: videoUrl };
+      videos.unshift(video);
+      await saveVideos(videos);
+      return json({ ok: true, video, videos });
+    }
+
+    if (action === "delete-video") {
+      const id = String(payload.id || "");
+      const videos = await readVideos();
+      const video = videos.find(x => x.id === id);
+      if (!video) return json({ error: "Vídeo não encontrado." }, 404);
+      await saveVideos(videos.filter(x => x.id !== id));
+      if (video.videoKey) await getStore(VIDEO_STORE).delete(video.videoKey);
+      return json({ ok: true, videos: videos.filter(x => x.id !== id) });
     }
 
     if (action === "save") {

@@ -5,7 +5,7 @@ O QUE ESTÁ INCLUÍDO
 - Área de administração em /admin.
 - Carregamento de fotografias (JPG, PNG, WEBP ou GIF, até 4 MB).
 - Criar, editar e apagar produtos, descrições e preços.
-- Fotografias e catálogo guardados online com Netlify Blobs.
+- Fotografias, catálogo e vídeos guardados online com Netlify Blobs.\n- Galeria pública de vídeos com carregamento de MP4 e ligações do YouTube/TikTok.
 - Palavra-passe protegida por variáveis de ambiente; não está escrita no código.
 
 ANTES DE PUBLICAR
@@ -27,10 +27,10 @@ COMO USAR
 - Loja: endereço do site Netlify.
 - Administração: endereço do site seguido de /admin/
 - Entra com ADMIN_PASSWORD.
-- Para adicionar: Novo produto > preencher nome PT e FR > escolher fotografia > Carregar fotografia > Guardar produto.
+- Para adicionar um produto: Novo produto > preencher nome PT e FR > escolher fotografia > Carregar fotografia > Guardar produto.\n- Para vídeos: na secção “Vídeos da LUSOFORCE 3D”, podes carregar MP4 (máximo 5 MB nesta versão) ou adicionar uma ligação HTTPS do YouTube/TikTok. Podes apagar vídeos publicados.
 
 NOTAS
-- A primeira publicação precisa de ser feita através da integração GitHub/Netlify para que as Netlify Functions sejam compiladas. Um simples arrastar-e-largar de HTML não ativa esta API.
+- A primeira publicação precisa de ser feita através da integração GitHub/Netlify para que as Netlify Functions sejam compiladas. Um simples arrastar-e-largar de HTML não ativa esta API. Os vídeos MP4 são enviados pela Netlify Function e, por isso, estão limitados a 5 MB nesta versão. Para vídeos maiores, recomenda-se usar YouTube ou TikTok.
 - O catálogo inicial contém exemplos editáveis. Podes alterá-los ou apagá-los na área de administração.
 - O endereço de email de encomendas continua como CONTACTO_A_CONFIGURAR no site. Substitui-o pelo teu email antes de receber pedidos.
 - O site prepara pedidos por email; pagamentos online ainda não estão configurados.
