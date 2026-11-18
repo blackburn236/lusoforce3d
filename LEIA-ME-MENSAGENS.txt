@@ -1,0 +1,42 @@
+LUSOFORCE 3D — MENSAGENS PRIVADAS
+=================================
+
+O QUE FOI ADICIONADO
+- Formulário público para o cliente enviar uma mensagem.
+- Código privado aleatório para o cliente voltar a consultar a conversa.
+- Respostas do cliente e da administração com histórico guardado na Netlify Blobs.
+- Caixa de entrada no painel /admin/ com lista de conversas, histórico, resposta e eliminação.
+- Mantém a gestão de produtos e fotografias já existente.
+
+COMO PUBLICAR NO GITHUB
+1. Descarrega e extrai este ZIP no computador.
+2. Abre o repositório GitHub: blackburn236/lusoforce3d.
+3. Entra na pasta do repositório e carrega os ficheiros/pastas deste pacote, mantendo exatamente a estrutura:
+   - index.html
+   - admin/index.html
+   - netlify/functions/admin-api.mjs
+   - netlify.toml
+   - package.json
+   - fundo-lusoforce3d.jpg (se incluído)
+4. Confirma a substituição dos ficheiros existentes e faz Commit changes.
+5. Aguarda o deploy automático da Netlify.
+
+CONFIGURAÇÃO NETLIFY
+A funcionalidade usa a mesma configuração segura da área de administração:
+- ADMIN_PASSWORD: palavra-passe da administração.
+- SESSION_SECRET: segredo aleatório com pelo menos 32 caracteres.
+Se estas variáveis já estão configuradas e a administração de produtos funciona, não precisas de as alterar.
+
+COMO TESTAR
+1. Abre a loja pública e envia uma mensagem de teste com um email válido.
+2. Guarda o código privado apresentado no ecrã.
+3. Abre /admin/, inicia sessão e consulta a Caixa de mensagens.
+4. Responde à mensagem.
+5. Volta à loja, introduz o código privado e confirma que a resposta aparece.
+6. Envia também uma resposta como cliente e confirma que aparece no painel.
+
+IMPORTANTE
+- As mensagens ficam armazenadas no serviço Netlify Blobs associado ao site.
+- O código privado é apresentado ao cliente uma vez no momento da criação. O cliente deve guardá-lo; sem o código não consegue recuperar a conversa.
+- Não existe envio automático de email nesta versão.
+- Esta funcionalidade só fica ativa depois de os ficheiros serem publicados e o deploy Netlify terminar.

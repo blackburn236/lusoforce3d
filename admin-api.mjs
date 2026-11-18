@@ -1,8 +1,9 @@
 import { getStore } from "@netlify/blobs";
-import { createHmac, timingSafeEqual, randomUUID } from "node:crypto";
+import { createHmac, timingSafeEqual, randomUUID, randomBytes } from "node:crypto";
 
 const PRODUCT_STORE = "lusoforce-products";
 const IMAGE_STORE = "lusoforce-images";
+const MESSAGE_STORE = "lusoforce-messages";
 const VIDEO_STORE = "lusoforce-videos";
 const VIDEO_CATALOG_KEY = "videos-v1";
 const CATALOG_KEY = "catalog-v1";
@@ -79,6 +80,23 @@ async function saveProducts(products) {
   await getStore(PRODUCT_STORE).setJSON(CATALOG_KEY, products);
 }
 
+const cleanText = (v, max) => String(v || "").trim().slice(0, max);
+const codeHash = code => createHmac("sha256", process.env.SESSION_SECRET || "").update(String(code).toUpperCase().replace(/[^A-Z0-9]/g, "")).digest("hex");
+async function getThread(code) {
+  if (!/^[A-F0-9]{16}$/i.test(String(code || "").replace(/[^A-Z0-9]/gi, ""))) return null;
+  return await getStore(MESSAGE_STORE).get(`thread-${codeHash(code)}`, { type: "json", consistency: "strong" });
+}
+async function putThread(thread) {
+  await getStore(MESSAGE_STORE).setJSON(`thread-${thread.key}`, thread);
+}
+async function listThreads() {
+  const store = getStore(MESSAGE_STORE);
+  const result = await store.list({ prefix: "thread-" });
+  const keys = (result.blobs || []).map(x => x.key);
+  const rows = await Promise.all(keys.map(key => store.get(key, { type: "json", consistency: "strong" })));
+  return rows.filter(Boolean).sort((a,b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+}
+
 export default async (request) => {
   try {
     const url = new URL(request.url);
@@ -121,6 +139,12 @@ export default async (request) => {
       return json({ products: await readProducts() }, 200, { "cache-control": "public, max-age=30, stale-while-revalidate=60" });
     }
 
+    if (method === "GET" && url.searchParams.has("messages")) {
+      if (!validSession(request)) return json({ error: "Sessão terminada. Inicia sessão novamente." }, 401);
+      const threads = await listThreads();
+      return json({ threads: threads.map(t => ({ id: t.id, key: t.key, name: t.name, email: t.email, subject: t.subject, updatedAt: t.updatedAt, adminUnread: !!t.adminUnread, lastMessage: t.messages?.at(-1)?.text || "" })) });
+    }
+
     if (method !== "POST") return json({ error: "Método não permitido." }, 405);
     if (!sameOrigin(request)) return json({ error: "Pedido não autorizado." }, 403);
 
@@ -149,7 +173,55 @@ export default async (request) => {
     }
 
     if (action === "logout") return json({ ok: true }, 200, { "set-cookie": cookie("", 0) });
+
+    // Área pública de mensagens: o código aleatório funciona como chave privada da conversa.
+    if (["message-create", "message-read", "message-reply"].includes(action)) {
+      if (action === "message-create") {
+        const name = cleanText(payload.name, 80), email = cleanText(payload.email, 160), subject = cleanText(payload.subject, 120), message = cleanText(payload.message, 3000);
+        if (cleanText(payload.website, 100)) return json({ error: "Pedido inválido." }, 400);
+        if (!name || !/^\S+@\S+\.\S+$/.test(email) || !subject || message.length < 5) return json({ error: "Preenche o nome, um email válido, o assunto e a mensagem." }, 400);
+        const code = randomBytes(8).toString("hex").toUpperCase();
+        const key = codeHash(code), now = new Date().toISOString();
+        const thread = { id: randomUUID(), key, name, email, subject, createdAt: now, updatedAt: now, adminUnread: true, customerUnread: false, messages: [{ id: randomUUID(), sender: "customer", text: message, createdAt: now }] };
+        await putThread(thread);
+        return json({ ok: true, code, thread: { name, subject, messages: thread.messages } });
+      }
+      const code = cleanText(payload.code, 40), thread = await getThread(code);
+      if (!thread) return json({ error: "Código não encontrado. Confirma o código e tenta novamente." }, 404);
+      if (action === "message-read") {
+        thread.customerUnread = false;
+        return json({ ok: true, thread: { name: thread.name, subject: thread.subject, messages: thread.messages || [] } });
+      }
+      const message = cleanText(payload.message, 3000);
+      if (message.length < 1) return json({ error: "Escreve uma mensagem antes de enviar." }, 400);
+      const now = new Date().toISOString();
+      thread.messages.push({ id: randomUUID(), sender: "customer", text: message, createdAt: now });
+      thread.updatedAt = now; thread.adminUnread = true;
+      await putThread(thread);
+      return json({ ok: true, thread: { name: thread.name, subject: thread.subject, messages: thread.messages } });
+    }
+
     if (!validSession(request)) return json({ error: "Sessão terminada. Inicia sessão novamente." }, 401);
+
+    if (action === "admin-thread") {
+      const thread = (await listThreads()).find(t => t.id === String(payload.id || ""));
+      if (!thread) return json({ error: "Conversa não encontrada." }, 404);
+      thread.adminUnread = false; await putThread(thread);
+      return json({ thread });
+    }
+    if (action === "admin-reply") {
+      const thread = (await listThreads()).find(t => t.id === String(payload.id || ""));
+      const message = cleanText(payload.message, 3000);
+      if (!thread) return json({ error: "Conversa não encontrada." }, 404);
+      if (!message) return json({ error: "Escreve uma resposta." }, 400);
+      const now = new Date().toISOString(); thread.messages.push({ id: randomUUID(), sender: "admin", text: message, createdAt: now }); thread.updatedAt = now; thread.customerUnread = true;
+      await putThread(thread); return json({ ok: true, thread });
+    }
+    if (action === "admin-delete") {
+      const id = String(payload.id || ""), thread = (await listThreads()).find(t => t.id === id);
+      if (!thread) return json({ error: "Conversa não encontrada." }, 404);
+      await getStore(MESSAGE_STORE).delete(`thread-${thread.key}`); return json({ ok: true });
+    }
 
     if (action === "upload") {
       const file = payload.get("file");
